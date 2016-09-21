@@ -1,8 +1,8 @@
 package chord
 
 import (
-	"encoding/gob"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -10,39 +10,8 @@ import (
 	"time"
 )
 
-/*
-TCPTransport provides a TCP based Chord transport layer. This allows Chord
-to be implemented over a network, instead of only using the LocalTransport. It is
-meant to be a simple implementation, optimizing for simplicity instead of performance.
-Messages are sent with a header frame, followed by a body frame. All data is encoded
-using the GOB format for simplicity.
-
-Internally, there is 1 Goroutine listening for inbound connections, 1 Goroutine PER
-inbound connection.
-*/
-type TCPTransport struct {
-	sock     *net.TCPListener
-	timeout  time.Duration
-	maxIdle  time.Duration
-	lock     sync.RWMutex
-	local    map[string]*localRPC
-	inbound  map[*net.TCPConn]struct{}
-	poolLock sync.Mutex
-	pool     map[string][]*tcpOutConn
-	shutdown int32
-}
-
-type tcpOutConn struct {
-	host   string
-	sock   *net.TCPConn
-	header tcpHeader
-	enc    *gob.Encoder
-	dec    *gob.Decoder
-	used   time.Time
-}
-
 const (
-	tcpPing = iota
+	tcpPing byte = iota
 	tcpListReq
 	tcpGetPredReq
 	tcpNotifyReq
@@ -51,8 +20,26 @@ const (
 	tcpSkipSucReq
 )
 
+const (
+	tcpSetKeyReq byte = 10
+	tcpGetKeyReq byte = 11
+	tcpDelKeyReq byte = 12
+
+	tcpSnapshotReq byte = 20
+	tcpRestoreReq  byte = 21
+)
+
+type tcpOutConn struct {
+	host   string
+	sock   *net.TCPConn
+	header tcpHeader // Request header
+	enc    Encoder
+	dec    Decoder
+	used   time.Time
+}
+
 type tcpHeader struct {
-	ReqType int
+	ReqType byte
 }
 
 // Potential body types
@@ -86,6 +73,43 @@ type tcpBodyBoolError struct {
 	B   bool
 	Err error
 }
+type tcpBodyKey struct {
+	VN *Vnode
+	K  []byte
+}
+type tcpBodyKeyValue struct {
+	VN *Vnode
+	K  []byte
+	V  []byte
+}
+type tcpBodyKeyErr struct {
+	K   []byte
+	Err string
+}
+type tcpBodyKeyValueErr struct {
+	K   []byte
+	V   []byte
+	Err string
+}
+
+/*
+TCPTransport provides a TCP based Chord transport layer. This allows Chord to be implemented over a network, instead of only using the LocalTransport. It is meant to be a simple implementation, optimizing for simplicity instead of performance.  Messages are sent with a header frame, followed by a body frame. All data is encoded/decoded using a separate Encoder/Decoder interface.
+
+Internally, there is 1 Goroutine listening for inbound connections, 1 Goroutine PER inbound connection.
+
+This implementation contains a key value store rpc calls on top of the original provided TCPTransport
+*/
+type TCPTransport struct {
+	sock     *net.TCPListener
+	timeout  time.Duration
+	maxIdle  time.Duration
+	lock     sync.RWMutex
+	local    map[string]*localRPC
+	inbound  map[*net.TCPConn]struct{}
+	poolLock sync.Mutex
+	pool     map[string][]*tcpOutConn
+	shutdown int32
+}
 
 // Creates a new TCP transport on the given listen address with the
 // configured timeout duration.
@@ -105,12 +129,14 @@ func InitTCPTransport(listen string, timeout time.Duration) (*TCPTransport, erro
 	maxIdle := time.Duration(300 * time.Second)
 
 	// Setup the transport
-	tcp := &TCPTransport{sock: sock.(*net.TCPListener),
+	tcp := &TCPTransport{
+		sock:    sock.(*net.TCPListener),
 		timeout: timeout,
 		maxIdle: maxIdle,
 		local:   local,
 		inbound: inbound,
-		pool:    pool}
+		pool:    pool,
+	}
 
 	// Listen for connections
 	go tcp.listen()
@@ -156,8 +182,11 @@ func (t *TCPTransport) getConn(host string) (*tcpOutConn, error) {
 		if _, err := out.sock.Read(nil); err == nil {
 			return out, nil
 		}
-	}
 
+		// explicitly close ??
+		out.sock.Close()
+
+	}
 	// Try to establish a connection
 	conn, err := net.DialTimeout("tcp", host, t.timeout)
 	if err != nil {
@@ -167,8 +196,8 @@ func (t *TCPTransport) getConn(host string) (*tcpOutConn, error) {
 	// Setup the socket
 	sock := conn.(*net.TCPConn)
 	t.setupConn(sock)
-	enc := gob.NewEncoder(sock)
-	dec := gob.NewDecoder(sock)
+	enc := NewEncoder(sock)
+	dec := NewDecoder(sock)
 	now := time.Now()
 
 	// Wrap the sock
@@ -240,7 +269,7 @@ func (t *TCPTransport) ListVnodes(host string) ([]*Vnode, error) {
 
 	select {
 	case <-time.After(t.timeout):
-		return nil, fmt.Errorf("Command timed out!")
+		return nil, fmt.Errorf("ListVnodes timed out!")
 	case err := <-errChan:
 		return nil, err
 	case res := <-respChan:
@@ -291,12 +320,163 @@ func (t *TCPTransport) Ping(vn *Vnode) (bool, error) {
 
 	select {
 	case <-time.After(t.timeout):
-		return false, fmt.Errorf("Command timed out!")
+		return false, fmt.Errorf("Ping timed out!")
 	case err := <-errChan:
 		return false, err
 	case res := <-respChan:
 		return res, nil
 	}
+}
+
+func (t *TCPTransport) SetKey(vn *Vnode, key []byte, value []byte) error {
+	// Get a conn
+	out, err := t.getConn(vn.Host)
+	if err != nil {
+		return err
+	}
+
+	// Response channels
+	respChan := make(chan bool, 1)
+	errChan := make(chan error, 1)
+
+	go func() {
+		// Send a get key cmd
+		out.header.ReqType = tcpSetKeyReq
+		body := tcpBodyKeyValue{K: key, V: value, VN: vn}
+		if err := out.enc.Encode(&out.header); err != nil {
+			errChan <- err
+			return
+		}
+		if err := out.enc.Encode(&body); err != nil {
+			errChan <- err
+			return
+		}
+
+		// Read in the response
+		resp := tcpBodyKeyErr{}
+		if err := out.dec.Decode(&resp); err != nil {
+			errChan <- err
+			return
+		}
+
+		// Return the connection
+		t.returnConn(out)
+		if resp.Err != "" {
+			errChan <- fmt.Errorf(resp.Err)
+		} else {
+			respChan <- true
+		}
+	}()
+
+	select {
+	case <-time.After(t.timeout):
+		return fmt.Errorf("SetKey timed out!")
+	case err := <-errChan:
+		return err
+	case <-respChan:
+		return nil
+	}
+	return nil
+}
+
+func (t *TCPTransport) DeleteKey(vn *Vnode, key []byte) error {
+	// Get a conn
+	out, err := t.getConn(vn.Host)
+	if err != nil {
+		return err
+	}
+	// Response channels
+	respChan := make(chan bool, 1)
+	errChan := make(chan error, 1)
+
+	go func() {
+		// Send a get key cmd
+		out.header.ReqType = tcpDelKeyReq
+		body := tcpBodyKey{VN: vn, K: key}
+		if err := out.enc.Encode(&out.header); err != nil {
+			errChan <- err
+			return
+		}
+		if err := out.enc.Encode(&body); err != nil {
+			errChan <- err
+			return
+		}
+
+		// Read in the response
+		resp := tcpBodyKeyErr{}
+		if err := out.dec.Decode(&resp); err != nil {
+			errChan <- err
+			return
+		}
+
+		// Return the connection
+		t.returnConn(out)
+		if resp.Err != "" {
+			errChan <- fmt.Errorf(resp.Err)
+		} else {
+			respChan <- true
+		}
+	}()
+
+	select {
+	case <-time.After(t.timeout):
+		return fmt.Errorf("DeleteKey timed out!")
+	case err := <-errChan:
+		return err
+	case <-respChan:
+		return nil
+	}
+	return nil
+}
+
+func (t *TCPTransport) GetKey(vn *Vnode, key []byte) ([]byte, error) {
+	// Get a conn
+	out, err := t.getConn(vn.Host)
+	if err != nil {
+		return nil, err
+	}
+	// Response channels
+	respChan := make(chan []byte, 1)
+	errChan := make(chan error, 1)
+
+	go func() {
+		// Send a get key cmd
+		out.header.ReqType = tcpGetKeyReq
+		body := tcpBodyKey{K: key, VN: vn}
+		if err := out.enc.Encode(&out.header); err != nil {
+			errChan <- err
+			return
+		}
+		if err := out.enc.Encode(&body); err != nil {
+			errChan <- err
+			return
+		}
+
+		// Read in the response
+		resp := tcpBodyKeyValueErr{}
+		if err := out.dec.Decode(&resp); err != nil {
+			errChan <- err
+			return
+		}
+
+		// Return the connection
+		t.returnConn(out)
+		if resp.Err != "" {
+			errChan <- fmt.Errorf(resp.Err)
+		} else {
+			respChan <- resp.V
+		}
+	}()
+
+	select {
+	case <-time.After(t.timeout):
+		return nil, fmt.Errorf("GetKey timed out!")
+	case err := <-errChan:
+		return nil, err
+	case resp := <-respChan:
+		return resp, nil
+	}
+	return nil, nil
 }
 
 // Request a nodes predecessor
@@ -341,7 +521,7 @@ func (t *TCPTransport) GetPredecessor(vn *Vnode) (*Vnode, error) {
 
 	select {
 	case <-time.After(t.timeout):
-		return nil, fmt.Errorf("Command timed out!")
+		return nil, fmt.Errorf("GetPredecessor timed out!")
 	case err := <-errChan:
 		return nil, err
 	case res := <-respChan:
@@ -391,7 +571,7 @@ func (t *TCPTransport) Notify(target, self *Vnode) ([]*Vnode, error) {
 
 	select {
 	case <-time.After(t.timeout):
-		return nil, fmt.Errorf("Command timed out!")
+		return nil, fmt.Errorf("Notify timed out!")
 	case err := <-errChan:
 		return nil, err
 	case res := <-respChan:
@@ -441,7 +621,7 @@ func (t *TCPTransport) FindSuccessors(vn *Vnode, n int, k []byte) ([]*Vnode, err
 
 	select {
 	case <-time.After(t.timeout):
-		return nil, fmt.Errorf("Command timed out!")
+		return nil, fmt.Errorf("FindSuccessors timed out!")
 	case err := <-errChan:
 		return nil, err
 	case res := <-respChan:
@@ -491,7 +671,7 @@ func (t *TCPTransport) ClearPredecessor(target, self *Vnode) error {
 
 	select {
 	case <-time.After(t.timeout):
-		return fmt.Errorf("Command timed out!")
+		return fmt.Errorf("ClearPredecessor timed out!")
 	case err := <-errChan:
 		return err
 	case <-respChan:
@@ -541,7 +721,87 @@ func (t *TCPTransport) SkipSuccessor(target, self *Vnode) error {
 
 	select {
 	case <-time.After(t.timeout):
-		return fmt.Errorf("Command timed out!")
+		return fmt.Errorf("SkipSuccessor timed out!")
+	case err := <-errChan:
+		return err
+	case <-respChan:
+		return nil
+	}
+}
+
+func (t *TCPTransport) Snapshot(vn *Vnode) (io.ReadCloser, error) {
+	// Get a conn
+	out, err := t.getConn(vn.Host)
+	if err != nil {
+		return nil, err
+	}
+
+	respChan := make(chan io.ReadCloser, 1)
+	errChan := make(chan error, 1)
+
+	go func() {
+		// Send a list command
+		out.header.ReqType = tcpSnapshotReq
+		if err := out.enc.Encode(&out.header); err != nil {
+			errChan <- err
+			return
+		}
+
+		body := tcpBodyVnode{Vn: vn}
+		if err := out.enc.Encode(&body); err != nil {
+			errChan <- err
+			return
+		}
+
+		respChan <- out.sock
+	}()
+
+	// TODO: increase time out for snapshots/restore
+	select {
+	case <-time.After(t.timeout):
+		return nil, fmt.Errorf("Snapshot timed out!")
+	case err := <-errChan:
+		return nil, err
+	case res := <-respChan:
+		return res, nil
+	}
+}
+
+func (t *TCPTransport) Restore(vn *Vnode, r io.ReadCloser) error {
+	// Get a conn
+	out, err := t.getConn(vn.Host)
+	if err != nil {
+		return err
+	}
+
+	respChan := make(chan bool, 1)
+	errChan := make(chan error, 1)
+
+	go func() {
+		// Send a list command
+		out.header.ReqType = tcpRestoreReq
+		if err := out.enc.Encode(&out.header); err != nil {
+			errChan <- err
+			return
+		}
+
+		body := tcpBodyVnode{Vn: vn}
+		if err := out.enc.Encode(&body); err != nil {
+			errChan <- err
+			return
+		}
+
+		if _, err = io.Copy(out.sock, r); err != nil {
+			errChan <- err
+			return
+		}
+		respChan <- true
+	}()
+
+	// TODO: increase time out for snapshots/restore
+	select {
+	case <-time.After(t.timeout):
+		return fmt.Errorf("Restore timed out!")
 	case err := <-errChan:
 		return err
 	case <-respChan:
@@ -645,8 +905,8 @@ func (t *TCPTransport) handleConn(conn *net.TCPConn) {
 		conn.Close()
 	}()
 
-	dec := gob.NewDecoder(conn)
-	enc := gob.NewEncoder(conn)
+	dec := NewDecoder(conn)
+	enc := NewEncoder(conn)
 	header := tcpHeader{}
 	var sendResp interface{}
 	for {
@@ -672,8 +932,11 @@ func (t *TCPTransport) handleConn(conn *net.TCPConn) {
 			if ok {
 				sendResp = tcpBodyBoolError{B: ok, Err: nil}
 			} else {
-				sendResp = tcpBodyBoolError{B: ok, Err: fmt.Errorf("Target VN not found! Target %s:%s",
-					body.Vn.Host, body.Vn.String())}
+				sendResp = tcpBodyBoolError{
+					B: ok,
+					Err: fmt.Errorf("Target VN not found! Target %s:%s",
+						body.Vn.Host, body.Vn.String()),
+				}
 			}
 
 		case tcpListReq:
@@ -792,6 +1055,116 @@ func (t *TCPTransport) handleConn(conn *net.TCPConn) {
 					body.Target.Host, body.Target.String())
 			}
 
+		case tcpSnapshotReq:
+			body := tcpBodyVnode{}
+			if err := dec.Decode(&body); err != nil {
+				log.Printf("[ERR] Failed to decode TCP body! Got %s", err)
+				return
+			}
+
+			// Get target vnode
+			obj, ok := t.get(body.Vn)
+			if !ok {
+				log.Printf("[snapshot] ERR Target VN not found: %s/%s", body.Vn.Host, body.Vn.String())
+				return
+			}
+
+			s, err := obj.Snapshot()
+			if err == nil {
+				_, err = io.Copy(conn, s)
+			}
+
+			if err != nil {
+				log.Printf("[snapshot] ERR %s", err)
+			}
+			return
+
+		case tcpRestoreReq:
+			body := tcpBodyVnode{}
+			if err := dec.Decode(&body); err != nil {
+				log.Printf("[ERR] Failed to decode TCP body! Got %s", err)
+				return
+			}
+
+			// Get target vnode
+			obj, ok := t.get(body.Vn)
+			if !ok {
+				log.Printf("[restore] ERR Target VN not found: %s/%s", body.Vn.Host, body.Vn.String())
+				return
+			}
+
+			if err := obj.Restore(conn); err != nil {
+				log.Printf("[restore] ERR %s", err)
+			}
+			return
+
+		case tcpSetKeyReq:
+			body := tcpBodyKeyValue{}
+			if err := dec.Decode(&body); err != nil {
+				log.Printf("[ERR] Failed to decode TCP body! Got %s", err)
+				return
+			}
+
+			obj, ok := t.get(body.VN)
+			resp := tcpBodyKeyErr{K: body.K}
+			if ok {
+				if err := obj.SetKey(body.K, body.V); err != nil {
+					resp.Err = err.Error()
+				}
+
+			} else {
+				resp.Err = fmt.Sprintf("Target VN not found! Target %s:%s",
+					body.VN.Host, body.VN.String())
+			}
+
+			sendResp = &resp
+
+		case tcpGetKeyReq:
+			body := tcpBodyKey{}
+			if err := dec.Decode(&body); err != nil {
+				log.Printf("[ERR] Failed to decode TCP body! Got %s", err)
+				return
+			}
+
+			obj, ok := t.get(body.VN)
+			resp := tcpBodyKeyValueErr{K: body.K}
+			if ok {
+				vv, err := obj.GetKey(body.K)
+				if err != nil {
+					resp.Err = err.Error()
+				} else {
+					resp.V = vv
+				}
+
+			} else {
+				resp.Err = fmt.Sprintf("Target VN not found! Target %s:%s",
+					body.VN.Host, body.VN.String())
+			}
+
+			sendResp = &resp
+
+		case tcpDelKeyReq:
+			body := tcpBodyKey{}
+			if err := dec.Decode(&body); err != nil {
+				log.Printf("[ERR] Failed to decode TCP body! Got %s", err)
+				return
+			}
+
+			obj, ok := t.get(body.VN)
+			resp := tcpBodyKeyErr{K: body.K}
+			if ok {
+				//log.Printf("[Delete] Key: %s %+v\n", body.K, obj)
+				if err := obj.DeleteKey(body.K); err != nil {
+					resp.Err = err.Error()
+				}
+
+			} else {
+				resp.Err = fmt.Sprintf("Target VN not found! Target %s:%s",
+					body.VN.Host, body.VN.String())
+			}
+
+			sendResp = &resp
+
 		default:
 			log.Printf("[ERR] Unknown request type! Got %d", header.ReqType)
 			return
@@ -810,7 +1183,6 @@ func trimSlice(vn []*Vnode) []*Vnode {
 	if vn == nil {
 		return vn
 	}
-
 	// Find a non-nil index
 	idx := len(vn) - 1
 	for vn[idx] == nil {

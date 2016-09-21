@@ -17,13 +17,17 @@ func makeVnode() *localVnode {
 		StabilizeMax:  max,
 		HashFunc:      sha1.New}
 	trans := InitLocalTransport(nil)
-	ring := &Ring{config: conf, transport: trans}
+
+	ring := newRing(nil)
+	ring.config = conf
+	ring.transport = trans
+
 	return &localVnode{ring: ring}
 }
 
 func TestVnodeInit(t *testing.T) {
 	vn := makeVnode()
-	vn.init(0)
+	vn.init(0, vn.ring.store.New())
 	if vn.Id == nil {
 		t.Fatalf("unexpected nil")
 	}
@@ -85,7 +89,7 @@ func TestVnodeStabilizeShutdown(t *testing.T) {
 
 func TestVnodeStabilizeResched(t *testing.T) {
 	vn := makeVnode()
-	vn.init(1)
+	vn.init(1, vn.ring.store.New())
 	vn.successors[0] = &vn.Vnode
 	vn.schedule()
 	vn.stabilize()
@@ -101,7 +105,7 @@ func TestVnodeStabilizeResched(t *testing.T) {
 
 func TestVnodeKnownSucc(t *testing.T) {
 	vn := makeVnode()
-	vn.init(0)
+	vn.init(0, vn.ring.store.New())
 	if vn.knownSuccessors() != 0 {
 		t.Fatalf("wrong num known!")
 	}
@@ -118,19 +122,19 @@ func TestVnodeCheckNewSuccAlivePanic(t *testing.T) {
 			t.Fatalf("expected panic!")
 		}
 	}()
-	vn1 := makeVnode()
-	vn1.init(1)
-	vn1.checkNewSuccessor()
+	vn := makeVnode()
+	vn.init(1, vn.ring.store.New())
+	vn.checkNewSuccessor()
 }
 
 // Checks pinging a live successor with no changes
 func TestVnodeCheckNewSuccAlive(t *testing.T) {
 	vn1 := makeVnode()
-	vn1.init(1)
+	vn1.init(1, vn1.ring.store.New())
 
 	vn2 := makeVnode()
 	vn2.ring = vn1.ring
-	vn2.init(2)
+	vn2.init(2, vn2.ring.store.New())
 	vn2.predecessor = &vn1.Vnode
 	vn1.successors[0] = &vn2.Vnode
 
@@ -149,15 +153,15 @@ func TestVnodeCheckNewSuccAlive(t *testing.T) {
 
 // Checks pinging a dead successor with no alternates
 func TestVnodeCheckNewSuccDead(t *testing.T) {
-	vn1 := makeVnode()
-	vn1.init(1)
-	vn1.successors[0] = &Vnode{Id: []byte{0}}
+	vn := makeVnode()
+	vn.init(1, vn.ring.store.New())
+	vn.successors[0] = &Vnode{Id: []byte{0}}
 
-	if err := vn1.checkNewSuccessor(); err == nil {
+	if err := vn.checkNewSuccessor(); err == nil {
 		t.Fatalf("err!", err)
 	}
 
-	if vn1.successors[0].String() != "00" {
+	if vn.successors[0].String() != "00" {
 		t.Fatalf("unexpected successor!")
 	}
 }
@@ -428,7 +432,7 @@ func TestVnodeFixFinger(t *testing.T) {
 	sort.Sort(r)
 	num := len(r.vnodes)
 	for i := 0; i < num; i++ {
-		r.vnodes[i].init(i)
+		r.vnodes[i].init(i, r.store.New())
 		r.vnodes[i].successors[0] = &r.vnodes[(i+1)%num].Vnode
 	}
 
@@ -461,7 +465,7 @@ func TestVnodeFixFinger(t *testing.T) {
 
 func TestVnodeCheckPredNoPred(t *testing.T) {
 	v := makeVnode()
-	v.init(0)
+	v.init(0, v.ring.store.New())
 	if err := v.checkPredecessor(); err != nil {
 		t.Fatalf("unpexected err! %s", err)
 	}
@@ -612,7 +616,7 @@ func TestVnodeFindSuccessorsSomeDead(t *testing.T) {
 
 func TestVnodeClearPred(t *testing.T) {
 	v := makeVnode()
-	v.init(0)
+	v.init(0, v.ring.store.New())
 	p := &Vnode{Id: []byte{12}}
 	v.predecessor = p
 	v.ClearPredecessor(p)
@@ -630,7 +634,7 @@ func TestVnodeClearPred(t *testing.T) {
 
 func TestVnodeSkipSucc(t *testing.T) {
 	v := makeVnode()
-	v.init(0)
+	v.init(0, v.ring.store.New())
 
 	s1 := &Vnode{Id: []byte{10}}
 	s2 := &Vnode{Id: []byte{11}}

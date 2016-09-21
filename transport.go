@@ -2,6 +2,8 @@ package chord
 
 import (
 	"fmt"
+	//"net"
+	"io"
 	"sync"
 )
 
@@ -143,6 +145,55 @@ func (lt *LocalTransport) SkipSuccessor(target, self *Vnode) error {
 	return lt.remote.SkipSuccessor(target, self)
 }
 
+func (lt *LocalTransport) GetKey(target *Vnode, key []byte) ([]byte, error) {
+	// Look for it locally
+	obj, ok := lt.get(target)
+	// If it exists locally, handle it
+	if ok {
+		return obj.GetKey(key)
+	}
+
+	// Pass onto remote
+	return lt.remote.GetKey(target, key)
+}
+
+func (lt *LocalTransport) DeleteKey(target *Vnode, key []byte) error {
+	obj, ok := lt.get(target)
+	// local
+	if ok {
+		return obj.DeleteKey(key)
+	}
+	// Pass onto remote
+	return lt.remote.DeleteKey(target, key)
+}
+
+func (lt *LocalTransport) SetKey(target *Vnode, key []byte, val []byte) error {
+	// Look for it locally
+	obj, ok := lt.get(target)
+	// If it exists locally, handle it
+	if ok {
+		return obj.SetKey(key, val)
+	}
+	// Pass onto remote
+	return lt.remote.SetKey(target, key, val)
+}
+
+func (lt *LocalTransport) Snapshot(target *Vnode) (io.ReadCloser, error) {
+	obj, ok := lt.get(target)
+	if ok {
+		return obj.Snapshot()
+	}
+	return lt.remote.Snapshot(target)
+}
+
+func (lt *LocalTransport) Restore(target *Vnode, r io.ReadCloser) error {
+	obj, ok := lt.get(target)
+	if ok {
+		return obj.Restore(r)
+	}
+	return lt.remote.Restore(target, r)
+}
+
 func (lt *LocalTransport) Register(v *Vnode, o VnodeRPC) {
 	// Register local instance
 	key := v.String()
@@ -192,6 +243,23 @@ func (*BlackholeTransport) ClearPredecessor(target, self *Vnode) error {
 }
 
 func (*BlackholeTransport) SkipSuccessor(target, self *Vnode) error {
+	return fmt.Errorf("Failed to connect! Blackhole: %s", target.String())
+}
+
+func (*BlackholeTransport) GetKey(target *Vnode, key []byte) ([]byte, error) {
+	return nil, fmt.Errorf("Failed to connect! Blackhole: %s", target.String())
+}
+func (*BlackholeTransport) SetKey(target *Vnode, key []byte, v []byte) error {
+	return fmt.Errorf("Failed to connect! Blackhole: %s", target.String())
+}
+func (*BlackholeTransport) DeleteKey(target *Vnode, key []byte) error {
+	return fmt.Errorf("Failed to connect! Blackhole: %s", target.String())
+}
+func (BlackholeTransport) Snapshot(target *Vnode) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("Failed to connect! Blackhole: %s", target.String())
+}
+
+func (BlackholeTransport) Restore(target *Vnode, r io.ReadCloser) error {
 	return fmt.Errorf("Failed to connect! Blackhole: %s", target.String())
 }
 

@@ -2,6 +2,7 @@ package chord
 
 import (
 	"bytes"
+	"io"
 	"testing"
 )
 
@@ -34,6 +35,24 @@ func (mv *MockVnodeRPC) ClearPredecessor(p *Vnode) error {
 
 func (mv *MockVnodeRPC) SkipSuccessor(s *Vnode) error {
 	mv.skip = s
+	return nil
+}
+
+func (mv *MockVnodeRPC) Snapshot() (io.ReadCloser, error) {
+	return nil, nil
+}
+
+func (mv *MockVnodeRPC) Restore(r io.ReadCloser) error {
+	return nil
+}
+
+func (mv *MockVnodeRPC) GetKey(key []byte) ([]byte, error) {
+	return nil, nil
+}
+func (mv *MockVnodeRPC) SetKey(key []byte, v []byte) error {
+	return nil
+}
+func (mv *MockVnodeRPC) DeleteKey(key []byte) error {
 	return nil
 }
 

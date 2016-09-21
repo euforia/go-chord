@@ -1,11 +1,15 @@
 
+clean:
+	rm -f coverage.out
+	go clean -i ./...
+
 build:
 	go build
 
 test:
-	go test .
+	go test -cover .
 
 cov:
-	gocov test github.com/armon/go-chord | gocov-html > /tmp/coverage.html
-	open /tmp/coverage.html
+	go test -coverprofile=coverage.out .
+	go tool cover -html=coverage.out
 

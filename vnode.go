@@ -3,6 +3,7 @@ package chord
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"time"
 )
@@ -13,7 +14,7 @@ func (vn *Vnode) String() string {
 }
 
 // Initializes a local vnode
-func (vn *localVnode) init(idx int) {
+func (vn *localVnode) init(idx int, kv KVStore) {
 	// Generate an ID
 	vn.genId(uint16(idx))
 
@@ -26,6 +27,9 @@ func (vn *localVnode) init(idx int) {
 
 	// Register with the RPC mechanism
 	vn.ring.transport.Register(&vn.Vnode, vn)
+
+	vn.store = kv
+	vn.store.Open(vn.String())
 }
 
 // Schedules the Vnode to do regular maintenence
@@ -350,4 +354,20 @@ func (vn *localVnode) knownSuccessors() (successors int) {
 		}
 	}
 	return
+}
+
+func (vn *localVnode) GetKey(key []byte) ([]byte, error) {
+	return vn.store.Get(key)
+}
+func (vn *localVnode) SetKey(key []byte, v []byte) error {
+	return vn.store.Set(key, v)
+}
+func (vn *localVnode) DeleteKey(key []byte) error {
+	return vn.store.Delete(key)
+}
+func (vn *localVnode) Snapshot() (io.ReadCloser, error) {
+	return vn.store.Snapshot()
+}
+func (vn *localVnode) Restore(r io.ReadCloser) error {
+	return vn.store.Restore(r)
 }

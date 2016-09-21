@@ -3,6 +3,7 @@ package chord
 import (
 	"bytes"
 	"crypto/sha1"
+	"net"
 	"sort"
 	"testing"
 	"time"
@@ -20,6 +21,12 @@ func (m *MockDelegate) PredecessorLeaving(local, remote *Vnode) {
 }
 func (m *MockDelegate) SuccessorLeaving(local, remote *Vnode) {
 }
+func (m *MockDelegate) Metadata(local *Vnode) (map[string]interface{}, error) {
+	return nil, nil
+}
+func (m *MockDelegate) Serve(c *net.TCPConn) error {
+	return nil
+}
 func (m *MockDelegate) Shutdown() {
 	m.shutdown = true
 }
@@ -34,14 +41,14 @@ func makeRing() *Ring {
 		StabilizeMax:  5 * time.Second,
 	}
 
-	ring := &Ring{}
+	ring := newRing(nil)
 	ring.init(conf, nil)
 	return ring
 }
 
 func TestRingInit(t *testing.T) {
 	// Create a ring
-	ring := &Ring{}
+	ring := newRing(nil)
 	conf := DefaultConfig("test")
 	ring.init(conf, nil)
 

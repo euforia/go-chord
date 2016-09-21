@@ -1,9 +1,27 @@
 package chord
 
 import (
+	"io"
 	"runtime"
 	"testing"
 	"time"
+)
+
+var (
+	testkvs = map[string]string{
+		"k0":  "v0",
+		"k1":  "v1",
+		"k2":  "v2",
+		"k3":  "v3",
+		"k4":  "v4",
+		"k5":  "v5",
+		"k6":  "v6",
+		"k7":  "v7",
+		"k8":  "v8",
+		"k9":  "v9",
+		"foo": "foo",
+		"bar": "bar",
+	}
 )
 
 type MultiLocalTrans struct {
@@ -73,6 +91,40 @@ func (ml *MultiLocalTrans) SkipSuccessor(target, self *Vnode) error {
 	}
 	return ml.remote.SkipSuccessor(target, self)
 }
+func (ml *MultiLocalTrans) GetKey(target *Vnode, key []byte) ([]byte, error) {
+
+	if local, ok := ml.hosts[target.Host]; ok {
+		return local.GetKey(target, key)
+	}
+	return ml.remote.GetKey(target, key)
+}
+func (ml *MultiLocalTrans) SetKey(target *Vnode, key []byte, v []byte) error {
+	if local, ok := ml.hosts[target.Host]; ok {
+		return local.SetKey(target, key, v)
+	}
+	return ml.remote.SetKey(target, key, v)
+}
+func (ml *MultiLocalTrans) DeleteKey(target *Vnode, key []byte) error {
+	if local, ok := ml.hosts[target.Host]; ok {
+		return local.DeleteKey(target, key)
+	}
+	return ml.remote.DeleteKey(target, key)
+}
+
+func (ml *MultiLocalTrans) Snapshot(target *Vnode) (io.ReadCloser, error) {
+	if local, ok := ml.hosts[target.Host]; ok {
+		//return local.Metadata(target)
+		return local.Snapshot(target)
+	}
+	return ml.remote.Snapshot(target)
+}
+
+func (ml *MultiLocalTrans) Restore(target *Vnode, r io.ReadCloser) error {
+	if local, ok := ml.hosts[target.Host]; ok {
+		return local.Restore(target, r)
+	}
+	return ml.remote.Restore(target, r)
+}
 
 func (ml *MultiLocalTrans) Register(v *Vnode, o VnodeRPC) {
 	local, ok := ml.hosts[v.Host]
@@ -127,7 +179,7 @@ func TestCreateShutdown(t *testing.T) {
 	time.After(15)
 	conf := fastConf()
 	numGo := runtime.NumGoroutine()
-	r, err := Create(conf, nil)
+	r, err := Create(conf, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
@@ -144,7 +196,7 @@ func TestJoin(t *testing.T) {
 
 	// Create the initial ring
 	conf := fastConf()
-	r, err := Create(conf, ml)
+	r, err := Create(conf, ml, nil)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
@@ -152,7 +204,7 @@ func TestJoin(t *testing.T) {
 	// Create a second ring
 	conf2 := fastConf()
 	conf2.Hostname = "test2"
-	r2, err := Join(conf2, ml, "test")
+	r2, err := Join(conf2, ml, nil, "test")
 	if err != nil {
 		t.Fatalf("failed to join local node! Got %s", err)
 	}
@@ -168,7 +220,7 @@ func TestJoinDeadHost(t *testing.T) {
 
 	// Create the initial ring
 	conf := fastConf()
-	_, err := Join(conf, ml, "noop")
+	_, err := Join(conf, ml, nil, "noop")
 	if err == nil {
 		t.Fatalf("expected err!")
 	}
@@ -180,7 +232,7 @@ func TestLeave(t *testing.T) {
 
 	// Create the initial ring
 	conf := fastConf()
-	r, err := Create(conf, ml)
+	r, err := Create(conf, ml, nil)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
@@ -188,7 +240,7 @@ func TestLeave(t *testing.T) {
 	// Create a second ring
 	conf2 := fastConf()
 	conf2.Hostname = "test2"
-	r2, err := Join(conf2, ml, "test")
+	r2, err := Join(conf2, ml, nil, "test")
 	if err != nil {
 		t.Fatalf("failed to join local node! Got %s", err)
 	}
@@ -219,7 +271,7 @@ func TestLookupBadN(t *testing.T) {
 
 	// Create the initial ring
 	conf := fastConf()
-	r, err := Create(conf, ml)
+	r, err := Create(conf, ml, nil)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
@@ -230,13 +282,13 @@ func TestLookupBadN(t *testing.T) {
 	}
 }
 
-func TestLookup(t *testing.T) {
+func TestSnapshotRestoreDelete(t *testing.T) {
 	// Create a multi transport
 	ml := InitMLTransport()
 
 	// Create the initial ring
 	conf := fastConf()
-	r, err := Create(conf, ml)
+	r, err := Create(conf, ml, nil)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
@@ -244,7 +296,107 @@ func TestLookup(t *testing.T) {
 	// Create a second ring
 	conf2 := fastConf()
 	conf2.Hostname = "test2"
-	r2, err := Join(conf2, ml, "test")
+	r2, err := Join(conf2, ml, nil, "test")
+	if err != nil {
+		t.Fatalf("failed to join local node! Got %s", err)
+	}
+
+	// Wait for some stabilization
+	<-time.After(100 * time.Millisecond)
+
+	keyCnt := 5
+	// Add some data
+	for k, v := range testkvs {
+		if _, err := r.SetKey(keyCnt, []byte(k), []byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	vns, _ := r.Lookup(keyCnt, []byte("k0"))
+	rd, err := r.SnapshotVnode(vns[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err = r2.RestoreVnode(vns[1], rd); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove data
+	for k, _ := range testkvs {
+		if err := r.DeleteKey(keyCnt, []byte(k)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSetGetKey(t *testing.T) {
+	// Create a multi transport
+	ml := InitMLTransport()
+
+	// Create the initial ring
+	conf := fastConf()
+	r, err := Create(conf, ml, nil)
+	if err != nil {
+		t.Fatalf("unexpected err. %s", err)
+	}
+
+	// Create a second ring
+	conf2 := fastConf()
+	conf2.Hostname = "test2"
+	r2, err := Join(conf2, ml, nil, "test")
+	if err != nil {
+		t.Fatalf("failed to join local node! Got %s", err)
+	}
+
+	// Wait for some stabilization
+	<-time.After(100 * time.Millisecond)
+
+	key := []byte("test/key")
+	val := []byte("test-value")
+	rsp, err := r.SetKey(2, key, val)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rsp) != 2 {
+		t.Fatal("response not of size 2")
+	}
+
+	// Read from other node
+	if rsp, err = r2.GetKey(2, key); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(rsp) != 2 {
+		t.Fatal("response not of size 2")
+	}
+	if string(rsp[0].Value) != string(val) {
+		t.Fatal("value mismatch")
+	}
+	if string(rsp[1].Value) != string(val) {
+		t.Fatal("value mismatch")
+	}
+
+	if err = r2.DeleteKey(2, key); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLookup(t *testing.T) {
+	// Create a multi transport
+	ml := InitMLTransport()
+
+	// Create the initial ring
+	conf := fastConf()
+	r, err := Create(conf, ml, nil)
+	if err != nil {
+		t.Fatalf("unexpected err. %s", err)
+	}
+
+	// Create a second ring
+	conf2 := fastConf()
+	conf2.Hostname = "test2"
+	r2, err := Join(conf2, ml, nil, "test")
 	if err != nil {
 		t.Fatalf("failed to join local node! Got %s", err)
 	}

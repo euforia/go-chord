@@ -18,7 +18,9 @@ func (r *Ring) init(conf *Config, trans Transport) {
 		vn := &localVnode{}
 		r.vnodes[i] = vn
 		vn.ring = r
-		vn.init(i)
+
+		kvs := r.store.New()
+		vn.init(i, kvs)
 	}
 
 	// Sort the vnodes

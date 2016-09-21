@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"gopkg.in/vmihailenco/msgpack.v2"
 )
 
-func prepRing(port int) (*Config, *TCPTransport, error) {
-	listen := fmt.Sprintf("localhost:%d", port)
+func prepRing2(port int) (*Config, *TCPTransport, error) {
+	listen := fmt.Sprintf("127.0.0.1:%d", port)
 	conf := DefaultConfig(listen)
 	conf.StabilizeMin = time.Duration(15 * time.Millisecond)
 	conf.StabilizeMax = time.Duration(45 * time.Millisecond)
@@ -19,29 +21,56 @@ func prepRing(port int) (*Config, *TCPTransport, error) {
 	return conf, trans, nil
 }
 
+func getVnodes(rn *Ring) []Vnode {
+	vns := make([]Vnode, len(rn.vnodes))
+	i := 0
+	for _, v := range rn.vnodes {
+		vns[i] = v.Vnode
+		i++
+	}
+	return vns
+}
+
 func TestTCPJoin(t *testing.T) {
 	// Prepare to create 2 nodes
-	c1, t1, err := prepRing(10025)
+	c1, t1, err := prepRing2(10035)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
-	c2, t2, err := prepRing(10026)
+	c2, t2, err := prepRing2(10036)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
 
 	// Create initial ring
-	r1, err := Create(c1, t1)
+	r1, err := Create(c1, t1, nil)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
 
 	// Join ring
-	r2, err := Join(c2, t2, c1.Hostname)
+	r2, err := Join(c2, t2, nil, c1.Hostname)
 	if err != nil {
 		t.Fatalf("failed to join local node! Got %s", err)
 	}
 
+	// do requests
+	vn := getVnodes(r1)[0]
+	// set
+	data, _ := msgpack.Marshal(map[string]interface{}{"id": "test"})
+	if err := t1.SetKey(&vn, []byte("test"), data); err != nil {
+		//t.Log("should have failed to set key")
+		t.Fatal(err)
+	}
+	// get
+
+	v, err := t1.GetKey(&vn, []byte("test"))
+	if err != nil {
+		t.Log(err)
+		t.Fail()
+	} else {
+		t.Logf("%s", v)
+	}
 	// Shutdown
 	r1.Shutdown()
 	r2.Shutdown()
@@ -51,23 +80,23 @@ func TestTCPJoin(t *testing.T) {
 
 func TestTCPLeave(t *testing.T) {
 	// Prepare to create 2 nodes
-	c1, t1, err := prepRing(10027)
+	c1, t1, err := prepRing2(10037)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
-	c2, t2, err := prepRing(10028)
+	c2, t2, err := prepRing2(10038)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
 
 	// Create initial ring
-	r1, err := Create(c1, t1)
+	r1, err := Create(c1, t1, nil)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
 
 	// Join ring
-	r2, err := Join(c2, t2, c1.Hostname)
+	r2, err := Join(c2, t2, nil, c1.Hostname)
 	if err != nil {
 		t.Fatalf("failed to join local node! Got %s", err)
 	}

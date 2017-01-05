@@ -267,7 +267,7 @@ func TestLookup(t *testing.T) {
 			t.Fatalf("result len differs!")
 		}
 		for idx := range vn1 {
-			if vn1[idx].StringID() != vn2[idx].StringID() {
+			if vn1[idx].String() != vn2[idx].String() {
 				t.Fatalf("results differ!")
 			}
 		}
@@ -306,7 +306,7 @@ func Test_VnodeSlice(t *testing.T) {
 	if !ok {
 		t.Fatal("missing host")
 	}
-	if len(v) != conf.NumSuccessors {
-		t.Fatal("length mismatch")
+	if len(v) != len(vns) {
+		t.Fatalf("length mismatch: %d=%d", len(vns), len(v))
 	}
 }

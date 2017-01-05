@@ -1,14 +1,6 @@
-package: .
+package: github.com/euforia/go-chord
 import:
-- package: github.com/anacrolix/utp
-- package: github.com/euforia/go-chord
-  subpackages:
-  - mux
-- package: github.com/golang/protobuf
-  subpackages:
-  - proto
+- package: github.com/ipkg/go-mux
 - package: github.com/zeebo/bencode
-- package: golang.org/x/net
-  subpackages:
-  - context
-- package: google.golang.org/grpc
+testImport:
+- package: github.com/anacrolix/utp

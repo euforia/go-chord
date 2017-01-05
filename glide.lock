@@ -1,5 +1,5 @@
-hash: 895973e275215f6c7ca4fd908b82d800d84f84be9cad590d6519e6037e021a38
-updated: 2017-01-05T12:20:11.438503248-08:00
+hash: 383d731bd8eaabc753acfeb27b0e01f5536e82a2218997dee95d446f306f8077
+updated: 2017-01-05T12:23:12.871059298-08:00
 imports:
 - name: github.com/anacrolix/missinggo
   version: f98ed7c558b78e5613696f3ebee0635dd9a2a37c
@@ -10,22 +10,8 @@ imports:
   version: d29d95568d362a0008c1ffbaea39a3449ea67509
 - name: github.com/anacrolix/utp
   version: cb02a8a1ac94501fb8421531cd94d874360d35b1
-- name: github.com/euforia/go-chord
-  version: ac636aaa2a6fc493c57a3b51604f3897c239638a
-  subpackages:
-  - mux
-- name: github.com/golang/protobuf
-  version: df1d3ca07d2d07bba352d5b73c4313b4e2a6203e
-  subpackages:
-  - proto
 - name: github.com/ipkg/go-mux
   version: e30e6d08f21af8c88a3b5b44fb11270305dfa1d7
 - name: github.com/zeebo/bencode
   version: 03ce512f17ce5deb2c024518d504c6419f04d39d
-- name: golang.org/x/net
-  version: cd8c2701a5e10f044db915e65eac68f738399d22
-  subpackages:
-  - context
-- name: google.golang.org/grpc
-  version: eddbd11c7ecd001d06777cb87b5ea7af54227907
 testImports: []

@@ -9,8 +9,8 @@ transport or RPC mechanism. Instead Chord relies on a transport implementation.
 
 ## Transport Interfaces
 
-- GRPCTransport
-- UTPTransport
+The master branch contains a uTP transport interface.  A GRPC transport interface 
+can be found in the grpc-transport branch.
 
 # Acknowledgements
 

@@ -25,7 +25,9 @@ func prepRingUTP(port int) (*Config, *UTPTransport, error) {
 		return nil, nil, err
 	}
 
-	mx := mux.NewMux(ln, ln.Addr())
+	lgen := &mux.UTPLayerGen{}
+
+	mx := mux.NewMux(ln, ln.Addr(), lgen)
 	go mx.Serve()
 	sock1 := mx.Listen(72)
 
@@ -42,6 +44,9 @@ func TestUTPJoin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)
 	}
+
+	<-time.After(300 * time.Millisecond)
+
 	c2, t2, err := prepRingUTP(30026)
 	if err != nil {
 		t.Fatalf("unexpected err. %s", err)

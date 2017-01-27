@@ -15,7 +15,7 @@ import (
 )
 
 type UTPTransport struct {
-	sock *mux.Layer
+	sock mux.ListenerDialer
 
 	dialTimeout time.Duration // Dial timeout
 	rpcTimeout  time.Duration
@@ -110,7 +110,7 @@ type utpBodyBoolError struct {
 // InitUTPTransport creates a new UTP transport on the given listen address with the
 // configured timeout duration. A RPC function can be given to implement additional
 // rpc's. maxConnIdle is the maximum age of a connection
-func InitUTPTransport(layer *mux.Layer, dialTimeout, rpcTimeout, maxConnIdle time.Duration) (*UTPTransport, error) {
+func InitUTPTransport(layer mux.ListenerDialer, dialTimeout, rpcTimeout, maxConnIdle time.Duration) (*UTPTransport, error) {
 	// Setup the transport
 	u := &UTPTransport{
 		sock:        layer,
